@@ -1,146 +1,61 @@
-import pandas as pd
 import pytest
+import pandas as pd
+import numpy as np
 from pathlib import Path
-
-from src.feature_pipeline.load import load_and_split_data
-from src.feature_pipeline.preprocess import (
-    clean_and_merge, drop_duplicates, remove_outliers, preprocess_split
-)
-from src.feature_pipeline.feature_engineering import (
-    add_date_features, frequency_encode, target_encode, drop_unused_columns, run_feature_engineering
-)
-
-# =========================
-# load.py – unit test
-# =========================
-# Confirms time-based splitting works.
-def test_load_and_split_data_creates_splits(tmp_path):
-    dummy_path = tmp_path / "raw.csv"
-    df = pd.DataFrame({
-        "date": pd.date_range("2018-01-01", periods=6, freq="365D"),
-        "price": [100, 200, 300, 400, 500, 600],
-        "zipcode": [1000, 2000, 1000, 2000, 3000, 4000],
-        "city_full": ["A", "B", "A", "B", "C", "D"],
-    })
-    df.to_csv(dummy_path, index=False)
-
-    train, eval, holdout = load_and_split_data(raw_path=str(dummy_path), output_dir=tmp_path)
-
-    assert not train.empty and not eval.empty and not holdout.empty
-    assert train["date"].max() < pd.to_datetime("2020-01-01")
-    assert eval["date"].min() >= pd.to_datetime("2020-01-01")
-    assert holdout["date"].min() >= pd.to_datetime("2022-01-01")
-    assert (tmp_path / "train.csv").exists()
-    print("✅ Data splitting test passed")
+from src.feature_pipeline.feature_engineering import run_feature_engineering
+from src.feature_pipeline.preprocess import preprocess_split
 
 
-# =========================
-# preprocess.py – unit tests
-# =========================
-# Confirms preprocessing functions behave as intended.
-def test_remove_outliers_drops_high_prices():
-    df = pd.DataFrame({"median_list_price": [100_000, 500_000, 20_000_000]})
-    cleaned = remove_outliers(df)
-    assert cleaned["median_list_price"].max() <= 19_000_000
-    print("✅ Outlier removal test passed")
+# Dados fake para teste rápido (sem depender do CSV real)
+@pytest.fixture
+def sample_raw_data(tmp_path):
+    df = pd.DataFrame(
+        {
+            "Species": ["Bream", "Roach", "Bream", "Pike"],
+            "Weight": [242.0, 160.0, 340.0, 200.0],
+            "Length1": [23.2, 21.1, 26.8, 30.0],
+            "Length2": [25.4, 22.5, 29.7, 32.5],
+            "Length3": [30.0, 25.0, 34.5, 36.0],
+            "Height": [11.52, 6.4, 12.4, 5.6],
+            "Width": [4.02, 3.3, 4.7, 3.5],
+        }
+    )
+
+    # Salvar como se fossem os arquivos brutos
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    df.to_csv(raw_dir / "train.csv", index=False)
+    df.to_csv(raw_dir / "eval.csv", index=False)
+    df.to_csv(raw_dir / "holdout.csv", index=False)
+
+    return raw_dir
 
 
-def test_drop_duplicates_removes_dupes():
-    df = pd.DataFrame({
-        "date": ["2020-01-01", "2020-01-01"],
-        "year": [2020, 2020],
-        "median_list_price": [100, 100]
-    })
-    cleaned = drop_duplicates(df)
-    assert cleaned.shape[0] == 0
-    print("✅ Duplicate removal test passed")
-
-
-def test_clean_and_merge_skips_when_city_missing():
-    df = pd.DataFrame({"date": ["2020-01-01"], "price": [100]})
-    result = clean_and_merge(df, metros_path=None)  # should skip gracefully
-    assert "date" in result.columns and "price" in result.columns
-    print("✅ Clean-and-merge (no city_full) passed")
-
-
-# =========================
-# feature_engineering – unit tests
-# =========================
-# Confirms feature functions create consistent numeric features and avoid leakage.
-def test_add_date_features_extracts_parts():
-    df = pd.DataFrame({"date": ["2020-01-15"]})
-    df = add_date_features(df)
-    assert df.loc[0, "year"] == 2020 and df.loc[0, "month"] == 1 and df.loc[0, "quarter"] == 1
-    print("✅ Date feature extraction test passed")
-
-
-def test_frequency_encode_counts_values():
-    train = pd.DataFrame({"zipcode": [1000, 1000, 2000]})
-    eval = pd.DataFrame({"zipcode": [1000, 3000]})
-    train, eval, freq_map = frequency_encode(train, eval, "zipcode")
-    assert train["zipcode_freq"].tolist() == [2, 2, 1]
-    assert eval["zipcode_freq"].tolist() == [2, 0]
-    assert isinstance(freq_map, pd.Series)
-    print("✅ Frequency encoding test passed")
-
-
-def test_target_encode_applies_mapping():
-    train = pd.DataFrame({"city_full": ["A", "B", "A"], "price": [100, 200, 300]})
-    eval = pd.DataFrame({"city_full": ["A", "B"]})
-    train, eval, te = target_encode(train, eval, "city_full", "price")
-    assert "city_full_encoded" in train.columns
-    assert eval["city_full_encoded"].notnull().all()
-    assert te is not None
-    print("✅ Target encoding test passed")
-
-
-def test_drop_unused_columns_removes_leakage():
-    tr = pd.DataFrame({
-        "date": ["2020-01-01"], "city_full": ["A"], "zipcode": [1000],
-        "median_sale_price": [200], "price": [300]
-    })
-    ev = tr.copy()
-    tr2, ev2 = drop_unused_columns(tr, ev)
-    for col in ["date", "city_full", "zipcode", "median_sale_price"]:
-        assert col not in tr2.columns and col not in ev2.columns
-    assert "price" in tr2.columns
-    print("✅ Drop unused columns test passed")
-
-
-# =========================
-# integration test
-# =========================
-# Confirms the whole feature pipeline works together.
-def test_full_pipeline_integration(tmp_path):
-    raw = pd.DataFrame({
-        "date": pd.date_range("2018-01-01", periods=6, freq="365D"),
-        "price": [100, 200, 300, 400, 500, 600],
-        "zipcode": [1000, 2000, 1000, 2000, 1000, 2000],
-        "city_full": ["A", "B", "A", "B", "A", "B"],
-        "median_list_price": [150_000]*6
-    })
-    raw_path = tmp_path / "raw.csv"
-    raw.to_csv(raw_path, index=False)
-
-    train, eval, holdout = load_and_split_data(raw_path=str(raw_path), output_dir=tmp_path)
-
+def test_feature_engineering_pipeline(sample_raw_data, tmp_path):
+    """Teste de integração: Preprocess -> Feature Engineering"""
     processed_dir = tmp_path / "processed"
-    processed_dir.mkdir(exist_ok=True)
-    train.to_csv(tmp_path / "train.csv", index=False)
-    eval.to_csv(tmp_path / "eval.csv", index=False)
 
-    preprocess_split("train", raw_dir=tmp_path, processed_dir=processed_dir, metros_path=None)
-    preprocess_split("eval", raw_dir=tmp_path, processed_dir=processed_dir, metros_path=None)
+    # 1. Rodar Preprocessamento
+    preprocess_split("train", raw_dir=sample_raw_data, processed_dir=processed_dir)
+    preprocess_split("eval", raw_dir=sample_raw_data, processed_dir=processed_dir)
+    preprocess_split("holdout", raw_dir=sample_raw_data, processed_dir=processed_dir)
 
-    out_train, out_eval, out_holdout, freq_map, te = run_feature_engineering(
+    assert (processed_dir / "cleaning_train.csv").exists()
+
+    # 2. Rodar Engenharia de Features
+    train_df, eval_df, _, encoder = run_feature_engineering(
         in_train_path=processed_dir / "cleaning_train.csv",
         in_eval_path=processed_dir / "cleaning_eval.csv",
+        in_holdout_path=processed_dir / "cleaning_holdout.csv",
         output_dir=processed_dir,
     )
 
+    # Asserts Específicos para Peixes
+    assert "Species_encoded" in train_df.columns, "A coluna Species não foi codificada!"
+    assert "Species" not in train_df.columns, (
+        "A coluna original Species devia ter sido removida."
+    )
+    assert "Weight" in train_df.columns, "O target Weight desapareceu."
 
-    assert {"year", "zipcode_freq", "city_full_encoded"}.issubset(out_train.columns)
-    assert {"year", "zipcode_freq", "city_full_encoded"}.issubset(out_eval.columns)
-    assert freq_map is not None
-    assert te is not None
-    print("✅ Full pipeline integration test passed")
+    # Verificar se não há nulos gerados pelo encoder
+    assert not train_df["Species_encoded"].isnull().any()

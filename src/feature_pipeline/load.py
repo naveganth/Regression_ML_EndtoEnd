@@ -1,35 +1,32 @@
 """
-Load & time-split the raw dataset.
-
-- Production default writes to data/raw/
-- Tests can pass a temp `output_dir` so nothing in data/ is touched.
+Load & split the Fish Market dataset.
 """
 
 import pandas as pd
 from pathlib import Path
+from sklearn.model_selection import train_test_split
 
 DATA_DIR = Path("data/raw")
 
 
 def load_and_split_data(
-    raw_path: str = "data/raw/untouched_raw_original.csv",
+    raw_path: str = "data/raw/Fish.csv",
     output_dir: Path | str = DATA_DIR,
 ):
-    """Load raw dataset, split into train/eval/holdout by date, and save to output_dir."""
+    """Load raw dataset, split into train/eval/holdout, and save to output_dir."""
     df = pd.read_csv(raw_path)
 
-    # Ensure datetime + sort
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date")
+    # Filtrar dados inválidos (ex: peso zero ou negativo)
+    df = df[df["Weight"] > 0]
 
-    # Cutoffs
-    cutoff_date_eval = pd.Timestamp("2020-01-01")     # eval starts
-    cutoff_date_holdout = pd.Timestamp("2022-01-01")  # holdout starts
-
-    # Splits
-    train_df = df[df["date"] < cutoff_date_eval]
-    eval_df = df[(df["date"] >= cutoff_date_eval) & (df["date"] < cutoff_date_holdout)]
-    holdout_df = df[df["date"] >= cutoff_date_holdout]
+    # Split: 60% Train, 20% Eval, 20% Holdout
+    # Estratificar por Species garante que todas as espécies apareçam em todos os sets
+    train_df, temp_df = train_test_split(
+        df, test_size=0.4, random_state=42, stratify=df["Species"]
+    )
+    eval_df, holdout_df = train_test_split(
+        temp_df, test_size=0.5, random_state=42, stratify=temp_df["Species"]
+    )
 
     # Save
     outdir = Path(output_dir)
@@ -39,7 +36,9 @@ def load_and_split_data(
     holdout_df.to_csv(outdir / "holdout.csv", index=False)
 
     print(f"✅ Data split completed (saved to {outdir}).")
-    print(f"   Train: {train_df.shape}, Eval: {eval_df.shape}, Holdout: {holdout_df.shape}")
+    print(
+        f"   Train: {train_df.shape}, Eval: {eval_df.shape}, Holdout: {holdout_df.shape}"
+    )
 
     return train_df, eval_df, holdout_df
 

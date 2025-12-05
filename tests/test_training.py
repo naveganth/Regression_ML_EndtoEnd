@@ -1,68 +1,61 @@
-import math
+import pytest
+import pandas as pd
+import numpy as np
 from pathlib import Path
-from joblib import load
-
-from src.training_pipeline.train import train_model
-from src.training_pipeline.eval import evaluate_model
-from src.training_pipeline.tune import tune_model
+from src.feature_pipeline.feature_engineering import run_feature_engineering
+from src.feature_pipeline.preprocess import preprocess_split
 
 
-# Assumes you already ran feature engineering so the processed CSVs exist.
-TRAIN_PATH = Path("data/processed/feature_engineered_train.csv")
-EVAL_PATH = Path("data/processed/feature_engineered_eval.csv")
-
-# Ensuring we have the same keys in metrics dict.
-def _assert_metrics(m):
-    assert set(m.keys()) == {"mae", "rmse", "r2"}
-    assert all(isinstance(v, float) and math.isfinite(v) for v in m.values())
-
-
-# TRAIN: Trains a quick model (with tiny sample + params to keep tests fast).
-def test_train_creates_model_and_metrics(tmp_path):
-    out_path = tmp_path / "xgb_model.pkl"
-    # small params + sampling for speed
-    _, metrics = train_model(
-        train_path=TRAIN_PATH,
-        eval_path=EVAL_PATH,
-        model_output=out_path,
-        model_params={"n_estimators": 20, "max_depth": 4, "learning_rate": 0.1},
-        sample_frac=0.02,
+# Dados fake para teste rápido (sem depender do CSV real)
+@pytest.fixture
+def sample_raw_data(tmp_path):
+    df = pd.DataFrame(
+        {
+            "Species": ["Bream", "Roach", "Bream", "Pike"],
+            "Weight": [242.0, 160.0, 340.0, 200.0],
+            "Length1": [23.2, 21.1, 26.8, 30.0],
+            "Length2": [25.4, 22.5, 29.7, 32.5],
+            "Length3": [30.0, 25.0, 34.5, 36.0],
+            "Height": [11.52, 6.4, 12.4, 5.6],
+            "Width": [4.02, 3.3, 4.7, 3.5],
+        }
     )
-    assert out_path.exists()
-    _assert_metrics(metrics)
-    model = load(out_path)
-    assert model is not None
-    print("✅ train_model test passed")
 
-# EVAL: Trains a model first, then evaluates it on eval set. Confirms evaluation metrics are valid.
-def test_eval_works_with_saved_model(tmp_path):
-    # train quick model
-    model_path = tmp_path / "xgb_model.pkl"
-    train_model(
-        train_path=TRAIN_PATH,
-        eval_path=EVAL_PATH,
-        model_output=model_path,
-        model_params={"n_estimators": 20},
-        sample_frac=0.02,
-    )
-    metrics = evaluate_model(model_path=model_path, eval_path=EVAL_PATH, sample_frac=0.02)
-    _assert_metrics(metrics)
-    print("✅ evaluate_model test passed")
+    # Salvar como se fossem os arquivos brutos
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    df.to_csv(raw_dir / "train.csv", index=False)
+    df.to_csv(raw_dir / "eval.csv", index=False)
+    df.to_csv(raw_dir / "holdout.csv", index=False)
 
-# TUNE: Runs tune_model with only 2 trials (fast for CI).
-def test_tune_saves_best_model(tmp_path):
-    model_out = tmp_path / "xgb_best.pkl"
-    tracking_dir = tmp_path / "mlruns"
-    best_params, best_metrics = tune_model(
-        train_path=TRAIN_PATH,
-        eval_path=EVAL_PATH,
-        model_output=model_out,
-        n_trials=2,
-        sample_frac=0.02,
-        tracking_uri=str(tracking_dir),
-        experiment_name="test_xgb_optuna",
+    return raw_dir
+
+
+def test_feature_engineering_pipeline(sample_raw_data, tmp_path):
+    """Teste de integração: Preprocess -> Feature Engineering"""
+    processed_dir = tmp_path / "processed"
+
+    # 1. Rodar Preprocessamento
+    preprocess_split("train", raw_dir=sample_raw_data, processed_dir=processed_dir)
+    preprocess_split("eval", raw_dir=sample_raw_data, processed_dir=processed_dir)
+    preprocess_split("holdout", raw_dir=sample_raw_data, processed_dir=processed_dir)
+
+    assert (processed_dir / "cleaning_train.csv").exists()
+
+    # 2. Rodar Engenharia de Features
+    train_df, eval_df, _, encoder = run_feature_engineering(
+        in_train_path=processed_dir / "cleaning_train.csv",
+        in_eval_path=processed_dir / "cleaning_eval.csv",
+        in_holdout_path=processed_dir / "cleaning_holdout.csv",
+        output_dir=processed_dir,
     )
-    assert model_out.exists()
-    assert isinstance(best_params, dict) and best_params
-    _assert_metrics(best_metrics)
-    print("✅ tune_model test passed")
+
+    # Asserts Específicos para Peixes
+    assert "Species_encoded" in train_df.columns, "A coluna Species não foi codificada!"
+    assert "Species" not in train_df.columns, (
+        "A coluna original Species devia ter sido removida."
+    )
+    assert "Weight" in train_df.columns, "O target Weight desapareceu."
+
+    # Verificar se não há nulos gerados pelo encoder
+    assert not train_df["Species_encoded"].isnull().any()

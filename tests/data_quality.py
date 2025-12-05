@@ -1,85 +1,61 @@
-import sys
+import pytest
 import pandas as pd
-import great_expectations as gx
-from great_expectations.core.batch import Batch
-from great_expectations.execution_engine import PandasExecutionEngine
-from great_expectations.validator.validator import Validator
+import numpy as np
+from pathlib import Path
+from src.feature_pipeline.feature_engineering import run_feature_engineering
+from src.feature_pipeline.preprocess import preprocess_split
 
-def validate_data(path: str):
-    df = pd.read_csv(path)
 
-    # 1. Basic sanity on date & zip formatting
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    assert df["date"].notna().all(), "Invalid or missing dates"
-    assert df["date"].between("2010-01-01", "2025-12-31").all(), "Dates out of expected range"
-
-    df["zipcode_str"] = df["zipcode"].astype(str).str.zfill(5)
-
-    # 2. Create an Ephemeral DataContext (no config files needed)
-    context = gx.get_context(mode="ephemeral")
-
-    # 3. Wrap DataFrame in Validator via a Batch
-    batch = Batch(data=df)
-    validator = Validator(
-        execution_engine=PandasExecutionEngine(),
-        batches=[batch],
-        data_context=context,
+# Dados fake para teste rápido (sem depender do CSV real)
+@pytest.fixture
+def sample_raw_data(tmp_path):
+    df = pd.DataFrame(
+        {
+            "Species": ["Bream", "Roach", "Bream", "Pike"],
+            "Weight": [242.0, 160.0, 340.0, 200.0],
+            "Length1": [23.2, 21.1, 26.8, 30.0],
+            "Length2": [25.4, 22.5, 29.7, 32.5],
+            "Length3": [30.0, 25.0, 34.5, 36.0],
+            "Height": [11.52, 6.4, 12.4, 5.6],
+            "Width": [4.02, 3.3, 4.7, 3.5],
+        }
     )
 
-    # 4. Define your expectations
-    validator.expect_column_values_to_not_be_null("price")
-    validator.expect_column_values_to_be_between("price", min_value=1_000, max_value=12_000_000)
-    
-    # Allow 0 values (missing data indicators) or realistic price ranges
-    validator.expect_column_values_to_be_between("median_sale_price", min_value=0, max_value=19_000_000)
-    validator.expect_column_values_to_be_between("median_list_price", min_value=0, max_value=19_000_000)  # Allow for high-end markets but exclude obvious data errors
-    
-    validator.expect_column_values_to_be_between("homes_sold", min_value=0)
-    validator.expect_column_values_to_be_between("pending_sales", min_value=0)
-    
-    # Allow for longer days on market - some properties take years to sell
-    validator.expect_column_values_to_be_between("median_dom", min_value=0, max_value=10_000)
-    
-    # Allow wider range for sale-to-list ratio (0 for missing data, up to 2.0 for competitive markets)
-    validator.expect_column_values_to_be_between("avg_sale_to_list", min_value=0, max_value=2.0)
-    
-    validator.expect_column_values_to_not_be_null("city_full")
-    validator.expect_column_value_lengths_to_equal("zipcode_str", 5)
-    
-    # Allow 0 for missing population data
-    validator.expect_column_values_to_be_between("Total Population", min_value=0)
-    validator.expect_column_values_to_be_between("Median Age", min_value=0, max_value=120)
-    
-    # Allow 0 for missing home value data
-    validator.expect_column_values_to_be_between("Median Home Value", min_value=0)
+    # Salvar como se fossem os arquivos brutos
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    df.to_csv(raw_dir / "train.csv", index=False)
+    df.to_csv(raw_dir / "eval.csv", index=False)
+    df.to_csv(raw_dir / "holdout.csv", index=False)
 
-    # 5. Run validation
-    results = validator.validate()
-    total = len(results["results"])
-    passed = sum(r["success"] for r in results["results"])
-    failed = total - passed
+    return raw_dir
 
-    print(f"\n{path}: {passed}/{total} checks passed")
-    if failed:
-        print("❌ Failed expectations:")
-        for r in results["results"]:
-            if not r["success"]:
-                config = r["expectation_config"]
-                column = config.kwargs.get("column", "N/A")
-                expectation_type = config.type
-                kwargs = {k: v for k, v in config.kwargs.items() if k != "column"}
-                print(f"  - {expectation_type} on column '{column}' with params: {kwargs}")
-                
-                # Show some details about the failure
-                result = r.get("result", {})
-                if "observed_value" in result:
-                    print(f"    Observed: {result['observed_value']}")
-                if "element_count" in result and "unexpected_count" in result:
-                    print(f"    Unexpected count: {result['unexpected_count']}/{result['element_count']}")
-        sys.exit(1)
-    else:
-        print("✅ All checks passed!")
 
-if __name__ == "__main__":
-    for split in ["data/raw/train.csv", "data/raw/eval.csv", "data/raw/holdout.csv"]:
-        validate_data(split)
+def test_feature_engineering_pipeline(sample_raw_data, tmp_path):
+    """Teste de integração: Preprocess -> Feature Engineering"""
+    processed_dir = tmp_path / "processed"
+
+    # 1. Rodar Preprocessamento
+    preprocess_split("train", raw_dir=sample_raw_data, processed_dir=processed_dir)
+    preprocess_split("eval", raw_dir=sample_raw_data, processed_dir=processed_dir)
+    preprocess_split("holdout", raw_dir=sample_raw_data, processed_dir=processed_dir)
+
+    assert (processed_dir / "cleaning_train.csv").exists()
+
+    # 2. Rodar Engenharia de Features
+    train_df, eval_df, _, encoder = run_feature_engineering(
+        in_train_path=processed_dir / "cleaning_train.csv",
+        in_eval_path=processed_dir / "cleaning_eval.csv",
+        in_holdout_path=processed_dir / "cleaning_holdout.csv",
+        output_dir=processed_dir,
+    )
+
+    # Asserts Específicos para Peixes
+    assert "Species_encoded" in train_df.columns, "A coluna Species não foi codificada!"
+    assert "Species" not in train_df.columns, (
+        "A coluna original Species devia ter sido removida."
+    )
+    assert "Weight" in train_df.columns, "O target Weight desapareceu."
+
+    # Verificar se não há nulos gerados pelo encoder
+    assert not train_df["Species_encoded"].isnull().any()

@@ -1,64 +1,51 @@
-name: CI/CD Pipeline
+name: Fish Predictor CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  build-and-deploy:
+  test-and-build:
     runs-on: ubuntu-latest
+
     steps:
+      # 1. Baixar o código
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      # 2. Instalar uv (Gerenciador de pacotes rápido)
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          version: "latest"
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+      # 3. Configurar Python
+      - name: Set up Python
+        run: uv python install 3.11
 
-      # Build and push housing-api image
-      - name: Build, Tag, and Push housing-api
+      # 4. Instalar Dependências do Projeto
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # 5. Executar Pipeline de Treino
+      # Necessário para gerar 'models/xgb_model.pkl' e 'target_encoder.pkl' antes dos testes
+      - name: Train Model
         run: |
-          IMAGE_TAG=${GITHUB_SHA}
-          ECR_REGISTRY=261899902410.dkr.ecr.eu-west-2.amazonaws.com
-          ECR_REPOSITORY=housing-api
+          uv run python src/feature_pipeline/load.py
+          uv run python src/feature_pipeline/preprocess.py
+          uv run python src/feature_pipeline/feature_engineering.py
+          uv run python src/training_pipeline/train.py
 
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+      # 6. Rodar Testes Unitários
+      - name: Run Tests
+        run: uv run pytest tests/
 
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+      # 7. Testar Build da API (Docker)
+      - name: Build Docker Image (API)
+        run: docker build -t fish-api -f Dockerfile .
 
-      # Build and push housing-streamlit image
-      - name: Build, Tag, and Push housing-streamlit
-        run: |
-          IMAGE_TAG=${GITHUB_SHA}
-          ECR_REGISTRY=261899902410.dkr.ecr.eu-west-2.amazonaws.com
-          ECR_REPOSITORY=housing-streamlit
-
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f Dockerfile.streamlit .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      # Deploy to ECS - API
-      - name: Deploy housing-api-service
-        run: |
-          aws ecs update-service \
-            --cluster housing-api-cluster-ecs \
-            --service housing-api-service \
-            --force-new-deployment
-
-      # Deploy to ECS - Streamlit
-      - name: Deploy housing-streamlit-service
-        run: |
-          aws ecs update-service \
-            --cluster housing-api-cluster-ecs \
-            --service housing-streamlit-service \
-            --force-new-deployment
+      # 8. Testar Build do Streamlit (Docker)
+      - name: Build Docker Image (Frontend)
+        run: docker build -t fish-frontend -f Dockerfile.streamlit .
