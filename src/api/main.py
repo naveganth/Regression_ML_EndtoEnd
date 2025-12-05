@@ -17,7 +17,9 @@ ENCODER_PATH = BASE_DIR / "models" / "target_encoder.pkl"
 
 @app.get("/")
 def root():
-    return {"message": "Fish Weight Prediction API is running 🐟"}
+    return {"message": "Fish Weight Prediction API is running 🐟",
+     "local":"Verifique o link abaixo para a documentação do FastAPI",
+     "url": "http://localhost:8000/docs"}
 
 
 @app.get("/health")

@@ -86,7 +86,7 @@ Para visualizar o catálogo de modelos:
 1. Execute o comando de interface:
 
    ```bash
-   mlflow ui
+   make run-mlflow
    ```
 
 2. Acesse a http://127.0.0.1:5000.

@@ -1,3 +1,5 @@
+# Como rodar os comandos abaixo: Make {nome do comando} (lembre-se de usar no terminal.)
+
 # Instalação de dependências usando uv
 install:
 	pip install uv
@@ -16,7 +18,7 @@ run-api:
 
 # Rodar o Streamlit localmente
 run-app:
-	uv run streamlit run src/app.py
+	uv run streamlit run app.py
 
 # Build e Run do Docker (com limpeza de containers antigos para evitar conflito de porta)
 docker-auto:
@@ -24,6 +26,9 @@ docker-auto:
 	# O comando abaixo tenta parar e remover container antigo se existir (ignora erro se não existir)
 	-docker rm -f fish-predictor-container 2> NUL || true
 	docker run --name fish-predictor-container -p 8000:8000 fish-predictor
+
+run-mlflow:
+	uv run mlflow ui
 
 # Rodar testes (usando python -m para resolver imports)
 test:
