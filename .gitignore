@@ -54,7 +54,7 @@ Thumbs.db
 *.lock.json
 
 # Modelos de ML
-models
+models/
 
 # Arquivo vazio
 Nul
